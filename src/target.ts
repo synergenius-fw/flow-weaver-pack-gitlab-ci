@@ -33,6 +33,9 @@ export class GitLabCITarget extends BaseCICDTarget {
   readonly name = 'gitlab-ci';
   readonly description = 'GitLab CI/CD pipeline (.gitlab-ci.yml)';
 
+  /** Accumulated warnings for the current export run */
+  private _warnings: string[] = [];
+
   readonly deploySchema = {
     runner: { type: 'string' as const, description: 'Default Docker image', default: 'ubuntu:latest' },
   };
@@ -44,6 +47,7 @@ export class GitLabCITarget extends BaseCICDTarget {
   };
 
   async generate(options: ExportOptions): Promise<ExportArtifacts> {
+    this._warnings = [];
     const filePath = path.resolve(options.sourceFile);
     const outputDir = path.resolve(options.outputDir);
 
@@ -91,11 +95,21 @@ export class GitLabCITarget extends BaseCICDTarget {
       }
     }
 
+    // Warn about @concurrency (no direct GitLab equivalent)
+    for (const ast of targetWorkflows) {
+      if (ast.options?.cicd?.concurrency) {
+        this._warnings.push(
+          `@concurrency: GitLab CI has no direct concurrency group equivalent. Use resource_group for serial execution or interruptible for auto-cancellation.`
+        );
+      }
+    }
+
     return {
       files,
       target: this.name,
       workflowName: options.displayName || targetWorkflows[0].name,
       entryPoint: files[0].relativePath,
+      warnings: this._warnings.length > 0 ? this._warnings : undefined,
     };
   }
 
@@ -226,10 +240,15 @@ export class GitLabCITarget extends BaseCICDTarget {
   }
 
   /**
-   * Derive default image from @deploy annotations or built-in mappings.
+   * Derive default image from @runner annotation, @deploy annotations, or built-in mappings.
    */
-  private deriveDefaultImage(_ast: TWorkflowAST, jobs: CICDJob[]): string | undefined {
-    // Check steps for @deploy gitlab-ci image or built-in mapping
+  private deriveDefaultImage(ast: TWorkflowAST, jobs: CICDJob[]): string | undefined {
+    // Check @runner annotation first
+    const runner = ast.options?.cicd?.runner;
+    if (runner) {
+      return this.mapRunnerToImage(runner);
+    }
+    // Fall back to NODE_ACTION_MAP step images
     for (const job of jobs) {
       for (const step of job.steps) {
         const mapping = this.resolveActionMapping(step, 'gitlab-ci');
@@ -237,6 +256,18 @@ export class GitLabCITarget extends BaseCICDTarget {
       }
     }
     return undefined;
+  }
+
+  /**
+   * Map GitHub-style runner labels to Docker images.
+   */
+  private mapRunnerToImage(runner: string): string {
+    const imageMap: Record<string, string> = {
+      'ubuntu-latest': 'ubuntu:latest',
+      'ubuntu-22.04': 'ubuntu:22.04',
+      'ubuntu-20.04': 'ubuntu:20.04',
+    };
+    return imageMap[runner] || runner;
   }
 
   /**
@@ -305,20 +336,32 @@ export class GitLabCITarget extends BaseCICDTarget {
     // stage (use explicit stage from @stage assignment, or fall back to job ID)
     jobObj.stage = job.stage || job.id;
 
-    // image (from runner or default)
-    if (job.runner && job.runner !== 'ubuntu-latest') {
-      const imageMap: Record<string, string> = {
-        'ubuntu-latest': 'ubuntu:latest',
-        'ubuntu-22.04': 'ubuntu:22.04',
-        'ubuntu-20.04': 'ubuntu:20.04',
-      };
-      const image = imageMap[job.runner] || job.runner;
-      jobObj.image = image;
+    // image (from per-job runner override via @job X runner=Y)
+    if (job.runner) {
+      jobObj.image = this.mapRunnerToImage(job.runner);
     }
 
     // tags (from @job tags or @tags)
     if (job.tags && job.tags.length > 0) {
       jobObj.tags = job.tags;
+    }
+
+    // matrix strategy (parallel: matrix:)
+    if (job.matrix) {
+      const matrixEntries: Record<string, string[]>[] = [];
+      if (job.matrix.dimensions && Object.keys(job.matrix.dimensions).length > 0) {
+        matrixEntries.push(job.matrix.dimensions);
+      }
+      if (job.matrix.include) {
+        for (const inc of job.matrix.include) {
+          matrixEntries.push(
+            Object.fromEntries(Object.entries(inc).map(([k, v]) => [k, [v]])),
+          );
+        }
+      }
+      if (matrixEntries.length > 0) {
+        jobObj.parallel = { matrix: matrixEntries };
+      }
     }
 
     // needs (for DAG mode instead of stage-based ordering)
