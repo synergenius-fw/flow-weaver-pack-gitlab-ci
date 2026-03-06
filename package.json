@@ -38,7 +38,7 @@
     "release": "tsx scripts/release.ts"
   },
   "devDependencies": {
-    "@synergenius/flow-weaver": "^0.17.7",
+    "@synergenius/flow-weaver": "^0.19.2",
     "@types/node": "^20.0.0",
     "tsx": "^4.21.0",
     "typescript": "^5.0.0",
