@@ -64,7 +64,7 @@ export class GitLabCITarget extends BaseExportTarget {
     const filePath = path.resolve(options.sourceFile);
     const outputDir = path.resolve(options.outputDir);
 
-    const parseResult = await parseWorkflow(filePath, { nodeTypesOnly: false });
+    const parseResult = await parseWorkflow(filePath, { nodeTypesOnly: false, projectDir: path.dirname(filePath) });
     if (parseResult.errors.length > 0) {
       throw new Error(`Parse errors: ${parseResult.errors.join('; ')}`);
     }
