@@ -23,6 +23,7 @@ import {
   resolveJobSecrets,
   injectArtifactSteps,
   generateSecretsDoc,
+  generateCICDRuntime,
   type CICDJob,
 } from '@synergenius/flowweaver-pack-cicd';
 import type {
@@ -88,6 +89,11 @@ export class GitLabCITarget extends BaseExportTarget {
       injectArtifactSteps(jobs, artifacts);
       this.applyWorkflowOptions(jobs, ast);
 
+      // Generate the runtime TypeScript file that jobs will execute
+      const runtimeCode = generateCICDRuntime(ast, jobs, ast.nodeTypes);
+      const runtimeFileName = `src/${ast.functionName}.cicd.ts`;
+      files.push(this.createFile(outputDir, runtimeFileName, runtimeCode, 'handler'));
+
       const yamlContent = this.renderPipelineYAML(ast, jobs);
       files.push(this.createFile(outputDir, '.gitlab-ci.yml', yamlContent, 'config'));
 
@@ -147,8 +153,7 @@ export class GitLabCITarget extends BaseExportTarget {
         'GitLab Runner available (shared or project-specific)',
       ],
       steps: [
-        'Copy .gitlab-ci.yml to your repository root',
-        'Build your workflow: npx flow-weaver compile --target cicd <workflow>.ts',
+        'Copy .gitlab-ci.yml and the generated .cicd.ts runtime to your repository',
         'Configure required variables in GitLab (Settings > CI/CD > Variables)',
         'Push to trigger the pipeline',
       ],
@@ -530,13 +535,13 @@ export class GitLabCITarget extends BaseExportTarget {
       jobObj.dependencies = [];
     }
 
-    // artifacts: cross-job data flow via .fw-outputs/ + user-defined artifacts
+    // artifacts: cross-job data flow via .fw-artifacts/ + user-defined artifacts
     const artifactsObj: Record<string, unknown> = {};
     const artifactPaths: string[] = [];
 
-    // Add .fw-outputs/ path for cross-job data flow if downstream jobs exist
+    // Add .fw-artifacts/ path for cross-job data transfer (runtime generator writes here)
     if (job.uploadArtifacts && job.uploadArtifacts.length > 0) {
-      artifactPaths.push('.fw-outputs/');
+      artifactPaths.push('.fw-artifacts/');
     }
 
     if (job.uploadArtifacts && job.uploadArtifacts.length > 0) {
@@ -601,9 +606,9 @@ export class GitLabCITarget extends BaseExportTarget {
     // Install dependencies
     script.push('npm ci');
 
-    // Run compiled workflow for this job
+    // Run compiled workflow for this job (tsx executes TypeScript directly)
     const workflowBasename = ast.functionName;
-    script.push(`node dist/${workflowBasename}.cicd.js --job=${job.id}`);
+    script.push(`npx tsx src/${workflowBasename}.cicd.ts --job=${job.id}`);
 
     // Merge step-level env vars (from secret wiring) into the variables block
     for (const step of job.steps) {
